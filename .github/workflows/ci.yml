@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+
+jobs:
+  test:
+    name: Test & Build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Go Format Check
+        run: test -z "$(gofmt -s -l .)"
+
+      - name: Go Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test -v -race ./...
+
+      - name: Build binary
+        run: CGO_ENABLED=0 go build -v ./cmd/honeytrap
