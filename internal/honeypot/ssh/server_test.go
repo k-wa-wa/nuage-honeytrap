@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -16,12 +17,30 @@ import (
 	gossh "golang.org/x/crypto/ssh"
 )
 
-func TestSSHBanner(t *testing.T) {
-	var buf bytes.Buffer
-	l := logger.New(&buf)
+type safeBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (s *safeBuffer) Write(p []byte) (n int, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.Write(p)
+}
+
+func (s *safeBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.String()
+}
+
+func TestSSHBannerAndPreAuthProbe(t *testing.T) {
+	var sbuf safeBuffer
+	l := logger.New(&sbuf)
 
 	srv, err := NewServer(Config{
-		Port:        0, // dynamic port
+		Port:        0,
+		PublicPort:  22,
 		ServiceName: "bastion-test",
 		Logger:      l,
 	})
@@ -42,7 +61,6 @@ func TestSSHBanner(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to connect: %v", err)
 	}
-	defer conn.Close()
 
 	bannerBuf := make([]byte, 256)
 	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
@@ -55,14 +73,40 @@ func TestSSHBanner(t *testing.T) {
 	if !strings.HasPrefix(banner, defaultSSHBanner) {
 		t.Fatalf("unexpected banner: got %q, expected prefix %q", banner, defaultSSHBanner)
 	}
+
+	// Close connection before attempting any SSH handshake / authentication
+	_ = conn.Close()
+
+	// Wait briefly for pre_auth attack logging
+	time.Sleep(100 * time.Millisecond)
+
+	output := sbuf.String()
+	var event logger.AttackEvent
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+	found := false
+	for _, line := range lines {
+		if err := json.Unmarshal([]byte(line), &event); err == nil && event.Event == "honeypot_attack" {
+			if event.Protocol == "ssh" && event.Details["stage"] == "pre_auth" {
+				if event.DstPort != 22 {
+					t.Errorf("expected dst_port 22, got %d", event.DstPort)
+				}
+				found = true
+				break
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected pre_auth probe event in logs, got:\n%s", output)
+	}
 }
 
 func TestSSHPasswordAuthCapture(t *testing.T) {
-	var buf bytes.Buffer
-	l := logger.New(&buf)
+	var sbuf safeBuffer
+	l := logger.New(&sbuf)
 
 	srv, err := NewServer(Config{
 		Port:        0,
+		PublicPort:  22,
 		ServiceName: "bastion-test",
 		Logger:      l,
 	})
@@ -88,15 +132,13 @@ func TestSSHPasswordAuthCapture(t *testing.T) {
 		Timeout:         2 * time.Second,
 	}
 
-	// Should fail authentication
 	client, err := gossh.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", srv.Port()), clientConfig)
 	if err == nil {
 		client.Close()
 		t.Fatal("expected ssh dial to fail, but succeeded")
 	}
 
-	// Verify log
-	output := buf.String()
+	output := sbuf.String()
 	lines := strings.Split(strings.TrimSpace(output), "\n")
 	found := false
 	for _, line := range lines {
@@ -105,6 +147,9 @@ func TestSSHPasswordAuthCapture(t *testing.T) {
 			continue
 		}
 		if event.Event == "honeypot_attack" && event.Protocol == "ssh" {
+			if event.DstPort != 22 {
+				t.Errorf("expected dst_port 22, got %d", event.DstPort)
+			}
 			if event.Details["username"] == "admin" && event.Details["password"] == "SuperSecretP@ss!" {
 				found = true
 				break
@@ -118,11 +163,12 @@ func TestSSHPasswordAuthCapture(t *testing.T) {
 }
 
 func TestSSHPublicKeyAuthCapture(t *testing.T) {
-	var buf bytes.Buffer
-	l := logger.New(&buf)
+	var sbuf safeBuffer
+	l := logger.New(&sbuf)
 
 	srv, err := NewServer(Config{
 		Port:        0,
+		PublicPort:  22,
 		ServiceName: "bastion-test",
 		Logger:      l,
 	})
@@ -163,8 +209,7 @@ func TestSSHPublicKeyAuthCapture(t *testing.T) {
 		t.Fatal("expected ssh dial to fail, but succeeded")
 	}
 
-	// Verify log
-	output := buf.String()
+	output := sbuf.String()
 	lines := strings.Split(strings.TrimSpace(output), "\n")
 	found := false
 	for _, line := range lines {
@@ -174,6 +219,9 @@ func TestSSHPublicKeyAuthCapture(t *testing.T) {
 		}
 		if event.Event == "honeypot_attack" && event.Protocol == "ssh" {
 			if event.Details["username"] == "deployer" && event.Details["auth_method"] == "publickey" {
+				if event.Details["public_key"] == "" {
+					t.Error("expected non-empty public_key in details")
+				}
 				found = true
 				break
 			}
@@ -182,5 +230,44 @@ func TestSSHPublicKeyAuthCapture(t *testing.T) {
 
 	if !found {
 		t.Fatalf("did not find expected publickey attack event in logs:\n%s", output)
+	}
+}
+
+func TestSSHImmediateStopWithHangingConn(t *testing.T) {
+	var sbuf safeBuffer
+	l := logger.New(&sbuf)
+
+	srv, err := NewServer(Config{
+		Port:        0,
+		PublicPort:  22,
+		ServiceName: "bastion-test",
+		Logger:      l,
+	})
+	if err != nil {
+		t.Fatalf("failed to create server: %v", err)
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatalf("failed to start: %v", err)
+	}
+
+	// Connect and keep connection open without sending anything
+	conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", srv.Port()))
+	if err != nil {
+		t.Fatalf("dial failed: %v", err)
+	}
+	defer conn.Close()
+
+	// Stop server: must complete quickly without waiting for the 15s timeout
+	start := time.Now()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	if err := srv.Stop(ctx); err != nil {
+		t.Fatalf("expected clean stop, got: %v", err)
+	}
+
+	elapsed := time.Since(start)
+	if elapsed > 1*time.Second {
+		t.Errorf("Stop took too long: %v (expected < 1s)", elapsed)
 	}
 }

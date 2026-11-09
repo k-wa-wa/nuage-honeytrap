@@ -24,7 +24,8 @@ Nuage Cluster 向けのマルチプロトコル侵入検知ハニーポットで
   - 接続元 IP・ポート
   - クライアント SSH バージョン文字列
   - パスワード認証試行（ユーザー名、平文パスワード）
-  - 公開鍵認証試行（ユーザー名、鍵タイプ、公開鍵フィンガープリント）
+  - 公開鍵認証試行（ユーザー名、鍵タイプ、公開鍵、フィンガープリント）
+  - バナー取得のみの探索（`stage: "pre_auth"`）
 - **動作**: 全ての認証試行を記録した上で拒否（Permission denied）を返し、セッション開始を遮断する。
 
 ### 2. HTTP トラップ (標準 Port 80 / コンテナ Port 8080)
@@ -32,15 +33,17 @@ Nuage Cluster 向けのマルチプロトコル侵入検知ハニーポットで
 - **擬態対象**: 社内ステージング管理ポータル（Nuage Internal Portal v0.8.2-beta）
 - **エンドポイント**:
   - `/`: 社内ステージング管理画面風 HTML を返却。HTML コメントにデフォルト認証情報のヒントを配置して攻撃者の入力を誘引。
+  - `/login`: 偽の認証失敗画面（401 Unauthorized）を返却し、入力されたクレデンシャルを記録。
   - `/robots.txt`: `Disallow: /.env`, `Disallow: /admin/`, `Disallow: /backup.sql` などのトラップパスを記載。
-  - `/healthz`: Kubernetes ヘルスチェック用エンドポイント（攻撃ログは出力しない）。
-  - その他（`/.env`, `/admin/...` 等）: Apache 風の 404 Not Found を返却。
+  - `/healthz`: Kubernetes ヘルスチェック用エンドポイント（kubelet からの probe は攻撃ログ非出力。外部スキャン時は攻撃ログを記録）。
+  - その他（`/.env`, `/admin/...` 等）: パストラバーサルや多重スラッシュを含め、リダイレクトすることなく直接 Apache 風 404 Not Found を返却。
 - **検知情報**: メソッド、URL パス、Query パラメータ、User-Agent、リクエストヘッダー、POST 本文（最大 4KB）。
 
 ### 3. PostgreSQL トラップ (標準 Port 5432 / コンテナ Port 5432)
 - **擬態対象**: 社内ステージングデータベース
 - **ハンドシェイク**:
-  - SSLRequest / GSSENCRequest を受信した場合は `N`（非サポート）を返却し、平文での StartupMessage 送信へ誘導。
+  - SSLRequest / GSSENCRequest を受信した場合は `N`（非サポート）を連続返却し、平文での StartupMessage 送信へ誘導。
+  - 直接の TLS ClientHello や不正な長さのパケット、CancelRequest も検知・記録。
   - StartupMessage から要求ユーザー名、データベース名、クライアントオプションをパース。
 - **動作**: 接続情報をログ記録後、標準の PostgreSQL 認証エラーパケット（`FATAL: password authentication failed for user "xxx"`、SQLSTATE: 28P01）を返して安全に切断する。
 
@@ -54,7 +57,7 @@ Nuage Cluster 向けのマルチプロトコル侵入検知ハニーポットで
   "event": "honeypot_attack",
   "protocol": "ssh",
   "src_ip": "10.244.0.123",
-  "dst_port": 2222,
+  "dst_port": 22,
   "service": "bastion-dev",
   "details": {
     "auth_method": "password",
@@ -88,17 +91,20 @@ Nuage Cluster 向けのマルチプロトコル侵入検知ハニーポットで
 ## 開発と実行
 
 ### 必須要件
-- Go 1.22 以上（推奨: Go 1.26）
+- Go
 - Docker または Podman
 - kubectl / kustomize
 
 ### ローカルでのビルドとテスト
 ```bash
-# テストの実行
+# 全テストの実行（race detector 有効）
 go test -v -race ./...
 
+# キャッシュを無視して実行
+go test -count=1 ./...
+
 # バイナリのビルド
-go build -o bin/honeytrap ./cmd/honeytrap
+CGO_ENABLED=0 go build -o bin/honeytrap ./cmd/honeytrap
 
 # ローカルでの起動
 ./bin/honeytrap
@@ -110,9 +116,13 @@ go build -o bin/honeytrap ./cmd/honeytrap
 | `HONEYTRAP_SSH_PORT` | `2222` | SSH トラップの待受ポート |
 | `HONEYTRAP_HTTP_PORT` | `8080` | HTTP トラップの待受ポート |
 | `HONEYTRAP_POSTGRES_PORT` | `5432` | PostgreSQL トラップの待受ポート |
+| `HONEYTRAP_SSH_PUBLIC_PORT` | `22` | SSH トラップのログ用公開ポート |
+| `HONEYTRAP_HTTP_PUBLIC_PORT` | `80` | HTTP トラップのログ用公開ポート |
+| `HONEYTRAP_POSTGRES_PUBLIC_PORT` | `5432` | PostgreSQL トラップのログ用公開ポート |
 | `HONEYTRAP_SSH_SERVICE` | `bastion-dev` | SSH トラップのログ用サービス名 |
 | `HONEYTRAP_HTTP_SERVICE` | `portal-staging` | HTTP トラップのログ用サービス名 |
 | `HONEYTRAP_POSTGRES_SERVICE` | `postgres-staging` | PostgreSQL トラップのログ用サービス名 |
+| `HONEYTRAP_MAX_CONNECTIONS` | `100` | プロトコルごとの最大同時接続数 |
 
 ### Kubernetes マニフェストの検証
 ```bash

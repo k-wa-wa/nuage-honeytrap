@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/k-wa-wa/nuage-honeytrap/internal/config"
 	"github.com/k-wa-wa/nuage-honeytrap/internal/honeypot/http"
@@ -28,24 +29,30 @@ func NewManager(cfg *config.Config, log *logger.Logger) (*Manager, error) {
 	}
 
 	sshSrv, err := ssh.NewServer(ssh.Config{
-		Port:        cfg.SSHPort,
-		ServiceName: cfg.SSHServiceName,
-		Logger:      log,
+		Port:           cfg.SSHPort,
+		PublicPort:     cfg.SSHPublicPort,
+		ServiceName:    cfg.SSHServiceName,
+		Logger:         log,
+		MaxConnections: cfg.MaxConnections,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize ssh honeypot: %w", err)
 	}
 
 	httpSrv := http.NewServer(http.Config{
-		Port:        cfg.HTTPPort,
-		ServiceName: cfg.HTTPServiceName,
-		Logger:      log,
+		Port:           cfg.HTTPPort,
+		PublicPort:     cfg.HTTPPublicPort,
+		ServiceName:    cfg.HTTPServiceName,
+		Logger:         log,
+		MaxConnections: cfg.MaxConnections,
 	})
 
 	pgSrv := postgres.NewServer(postgres.Config{
-		Port:        cfg.PostgresPort,
-		ServiceName: cfg.PostgresServiceName,
-		Logger:      log,
+		Port:           cfg.PostgresPort,
+		PublicPort:     cfg.PostgresPublicPort,
+		ServiceName:    cfg.PostgresServiceName,
+		Logger:         log,
+		MaxConnections: cfg.MaxConnections,
 	})
 
 	return &Manager{
@@ -57,19 +64,22 @@ func NewManager(cfg *config.Config, log *logger.Logger) (*Manager, error) {
 	}, nil
 }
 
-// Start starts all honeypot protocol servers.
+// Start starts all honeypot protocol servers. If any server fails to start,
+// previously started servers are stopped to prevent leaked listeners.
 func (m *Manager) Start() error {
 	if err := m.sshServer.Start(); err != nil {
 		return fmt.Errorf("failed to start ssh server: %w", err)
 	}
+
 	if err := m.httpServer.Start(); err != nil {
-		ctx, cancel := context.WithCancel(context.Background())
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		_ = m.sshServer.Stop(ctx)
 		return fmt.Errorf("failed to start http server: %w", err)
 	}
+
 	if err := m.postgresServer.Start(); err != nil {
-		ctx, cancel := context.WithCancel(context.Background())
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		_ = m.httpServer.Stop(ctx)
 		_ = m.sshServer.Stop(ctx)
@@ -77,9 +87,12 @@ func (m *Manager) Start() error {
 	}
 
 	m.logger.Info("nuage-honeytrap initialized and running", map[string]interface{}{
-		"ssh_port":      m.sshServer.Port(),
-		"http_port":     m.httpServer.Port(),
-		"postgres_port": m.postgresServer.Port(),
+		"ssh_bind_port":        m.sshServer.Port(),
+		"http_bind_port":       m.httpServer.Port(),
+		"postgres_bind_port":   m.postgresServer.Port(),
+		"ssh_public_port":      m.cfg.SSHPublicPort,
+		"http_public_port":     m.cfg.HTTPPublicPort,
+		"postgres_public_port": m.cfg.PostgresPublicPort,
 	})
 	return nil
 }

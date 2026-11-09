@@ -27,7 +27,7 @@ spec:
       containers:
         - name: honeytrap
           image: ghcr.io/k-wa-wa/nuage-honeytrap:latest
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Always
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -50,6 +50,12 @@ spec:
             - name: HONEYTRAP_HTTP_PORT
               value: "8080"
             - name: HONEYTRAP_POSTGRES_PORT
+              value: "5432"
+            - name: HONEYTRAP_SSH_PUBLIC_PORT
+              value: "22"
+            - name: HONEYTRAP_HTTP_PUBLIC_PORT
+              value: "80"
+            - name: HONEYTRAP_POSTGRES_PUBLIC_PORT
               value: "5432"
           livenessProbe:
             httpGet:

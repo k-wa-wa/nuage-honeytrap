@@ -13,13 +13,24 @@ import (
 )
 
 func main() {
-	cfg := config.Load()
 	log := logger.DefaultLogger
 
+	cfg, err := config.Load()
+	if err != nil {
+		log.Error("configuration loading failed", map[string]interface{}{
+			"error": err.Error(),
+		})
+		os.Exit(1)
+	}
+
 	log.Info("starting nuage-honeytrap", map[string]interface{}{
-		"ssh_port":      cfg.SSHPort,
-		"http_port":     cfg.HTTPPort,
-		"postgres_port": cfg.PostgresPort,
+		"ssh_bind_port":        cfg.SSHPort,
+		"http_bind_port":       cfg.HTTPPort,
+		"postgres_bind_port":   cfg.PostgresPort,
+		"ssh_public_port":      cfg.SSHPublicPort,
+		"http_public_port":     cfg.HTTPPublicPort,
+		"postgres_public_port": cfg.PostgresPublicPort,
+		"max_connections":      cfg.MaxConnections,
 	})
 
 	mgr, err := honeypot.NewManager(cfg, log)

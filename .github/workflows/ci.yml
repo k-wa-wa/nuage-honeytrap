@@ -25,6 +25,9 @@ jobs:
       - name: Go Format Check
         run: test -z "$(gofmt -s -l .)"
 
+      - name: Go Mod Tidy Check
+        run: go mod tidy -diff
+
       - name: Go Vet
         run: go vet ./...
 

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"strconv"
 )
@@ -10,21 +11,60 @@ type Config struct {
 	SSHPort             int
 	HTTPPort            int
 	PostgresPort        int
+	SSHPublicPort       int
+	HTTPPublicPort      int
+	PostgresPublicPort  int
 	SSHServiceName      string
 	HTTPServiceName     string
 	PostgresServiceName string
+	MaxConnections      int
 }
 
-// Load loads configuration from environment variables with sensible defaults.
-func Load() *Config {
+// Load loads and validates configuration from environment variables.
+func Load() (*Config, error) {
+	sshPort, err := parsePortEnv("HONEYTRAP_SSH_PORT", 2222)
+	if err != nil {
+		return nil, err
+	}
+	httpPort, err := parsePortEnv("HONEYTRAP_HTTP_PORT", 8080)
+	if err != nil {
+		return nil, err
+	}
+	pgPort, err := parsePortEnv("HONEYTRAP_POSTGRES_PORT", 5432)
+	if err != nil {
+		return nil, err
+	}
+
+	sshPubPort, err := parsePortEnv("HONEYTRAP_SSH_PUBLIC_PORT", 22)
+	if err != nil {
+		return nil, err
+	}
+	httpPubPort, err := parsePortEnv("HONEYTRAP_HTTP_PUBLIC_PORT", 80)
+	if err != nil {
+		return nil, err
+	}
+	pgPubPort, err := parsePortEnv("HONEYTRAP_POSTGRES_PUBLIC_PORT", 5432)
+	if err != nil {
+		return nil, err
+	}
+
+	maxConns, err := parseIntEnv("HONEYTRAP_MAX_CONNECTIONS", 100, 1, 10000)
+	if err != nil {
+		return nil, err
+	}
+
 	return &Config{
-		SSHPort:             getEnvInt("HONEYTRAP_SSH_PORT", "SSH_PORT", 2222),
-		HTTPPort:            getEnvInt("HONEYTRAP_HTTP_PORT", "HTTP_PORT", 8080),
-		PostgresPort:        getEnvInt("HONEYTRAP_POSTGRES_PORT", "POSTGRES_PORT", 5432),
+		SSHPort:             sshPort,
+		HTTPPort:            httpPort,
+		PostgresPort:        pgPort,
+		SSHPublicPort:       sshPubPort,
+		HTTPPublicPort:      httpPubPort,
+		PostgresPublicPort:  pgPubPort,
 		SSHServiceName:      getEnvString("HONEYTRAP_SSH_SERVICE", "bastion-dev"),
 		HTTPServiceName:     getEnvString("HONEYTRAP_HTTP_SERVICE", "portal-staging"),
 		PostgresServiceName: getEnvString("HONEYTRAP_POSTGRES_SERVICE", "postgres-staging"),
-	}
+		MaxConnections:      maxConns,
+	}, nil
 }
 
 func getEnvString(key, fallback string) string {
@@ -34,18 +74,21 @@ func getEnvString(key, fallback string) string {
 	return fallback
 }
 
-func getEnvInt(primaryKey, fallbackKey string, fallback int) int {
-	if val := os.Getenv(primaryKey); val != "" {
-		if n, err := strconv.Atoi(val); err == nil && n > 0 && n <= 65535 {
-			return n
-		}
+func parsePortEnv(key string, fallback int) (int, error) {
+	return parseIntEnv(key, fallback, 1, 65535)
+}
+
+func parseIntEnv(key string, fallback, minVal, maxVal int) (int, error) {
+	val := os.Getenv(key)
+	if val == "" {
+		return fallback, nil
 	}
-	if fallbackKey != "" {
-		if val := os.Getenv(fallbackKey); val != "" {
-			if n, err := strconv.Atoi(val); err == nil && n > 0 && n <= 65535 {
-				return n
-			}
-		}
+	n, err := strconv.Atoi(val)
+	if err != nil {
+		return 0, fmt.Errorf("invalid value for %s: %q must be an integer: %w", key, val, err)
 	}
-	return fallback
+	if n < minVal || n > maxVal {
+		return 0, fmt.Errorf("invalid value for %s: %d is out of range [%d, %d]", key, n, minVal, maxVal)
+	}
+	return n, nil
 }

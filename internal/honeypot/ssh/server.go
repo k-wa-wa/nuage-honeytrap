@@ -7,7 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/k-wa-wa/nuage-honeytrap/internal/logger"
@@ -18,21 +20,27 @@ const defaultSSHBanner = "SSH-2.0-OpenSSH_7.9p1 Debian-10+deb10u2"
 
 // Server is an SSH honeypot server that captures credentials and refuses all logins.
 type Server struct {
-	port        int
-	serviceName string
-	logger      *logger.Logger
-	listener    net.Listener
-	sshConfig   *gossh.ServerConfig
-	wg          sync.WaitGroup
-	quit        chan struct{}
+	port          int
+	publicPort    int
+	serviceName   string
+	logger        *logger.Logger
+	listener      net.Listener
+	sshConfig     *gossh.ServerConfig
+	wg            sync.WaitGroup
+	quit          chan struct{}
+	activeConnsMu sync.Mutex
+	activeConns   map[net.Conn]struct{}
+	connSemaphore chan struct{}
 }
 
 // Config holds options for the SSH honeypot.
 type Config struct {
-	Port        int
-	ServiceName string
-	Logger      *logger.Logger
-	Signer      gossh.Signer // optional: if nil, an ephemeral Ed25519 host key is generated
+	Port           int
+	PublicPort     int
+	ServiceName    string
+	Logger         *logger.Logger
+	Signer         gossh.Signer // optional: if nil, an ephemeral Ed25519 host key is generated
+	MaxConnections int
 }
 
 // NewServer creates a new SSH honeypot server.
@@ -42,6 +50,12 @@ func NewServer(cfg Config) (*Server, error) {
 	}
 	if cfg.ServiceName == "" {
 		cfg.ServiceName = "bastion-dev"
+	}
+	if cfg.PublicPort <= 0 {
+		cfg.PublicPort = 22
+	}
+	if cfg.MaxConnections <= 0 {
+		cfg.MaxConnections = 100
 	}
 
 	signer := cfg.Signer
@@ -58,45 +72,19 @@ func NewServer(cfg Config) (*Server, error) {
 	}
 
 	s := &Server{
-		port:        cfg.Port,
-		serviceName: cfg.ServiceName,
-		logger:      cfg.Logger,
-		quit:        make(chan struct{}),
+		port:          cfg.Port,
+		publicPort:    cfg.PublicPort,
+		serviceName:   cfg.ServiceName,
+		logger:        cfg.Logger,
+		quit:          make(chan struct{}),
+		activeConns:   make(map[net.Conn]struct{}),
+		connSemaphore: make(chan struct{}, cfg.MaxConnections),
 	}
 
+	// We pass a per-connection context or hook via conn wrapping or callbacks
 	sshConfig := &gossh.ServerConfig{
 		ServerVersion: defaultSSHBanner,
-		NoClientAuth:  false,
-		NoClientAuthCallback: func(conn gossh.ConnMetadata) (*gossh.Permissions, error) {
-			s.logger.LogAttack("ssh", logger.ExtractIP(conn.RemoteAddr().String()), s.port, s.serviceName, map[string]interface{}{
-				"auth_method":    "none",
-				"username":       conn.User(),
-				"client_version": string(conn.ClientVersion()),
-				"remote_addr":    conn.RemoteAddr().String(),
-			})
-			return nil, errors.New("permission denied")
-		},
-		PasswordCallback: func(conn gossh.ConnMetadata, password []byte) (*gossh.Permissions, error) {
-			s.logger.LogAttack("ssh", logger.ExtractIP(conn.RemoteAddr().String()), s.port, s.serviceName, map[string]interface{}{
-				"auth_method":    "password",
-				"username":       conn.User(),
-				"password":       string(password),
-				"client_version": string(conn.ClientVersion()),
-				"remote_addr":    conn.RemoteAddr().String(),
-			})
-			return nil, errors.New("permission denied")
-		},
-		PublicKeyCallback: func(conn gossh.ConnMetadata, key gossh.PublicKey) (*gossh.Permissions, error) {
-			s.logger.LogAttack("ssh", logger.ExtractIP(conn.RemoteAddr().String()), s.port, s.serviceName, map[string]interface{}{
-				"auth_method":    "publickey",
-				"username":       conn.User(),
-				"key_type":       key.Type(),
-				"fingerprint":    gossh.FingerprintSHA256(key),
-				"client_version": string(conn.ClientVersion()),
-				"remote_addr":    conn.RemoteAddr().String(),
-			})
-			return nil, errors.New("permission denied")
-		},
+		NoClientAuth:  true, // Enable NoClientAuth so NoClientAuthCallback is invoked for "none" auth
 	}
 	sshConfig.AddHostKey(signer)
 	s.sshConfig = sshConfig
@@ -113,14 +101,14 @@ func (s *Server) Start() error {
 	}
 	s.listener = ln
 
-	// If port 0 was passed, update port to assigned listener port
 	if tcpAddr, ok := ln.Addr().(*net.TCPAddr); ok {
 		s.port = tcpAddr.Port
 	}
 
 	s.logger.Info("SSH honeypot started", map[string]interface{}{
-		"port":    s.port,
-		"service": s.serviceName,
+		"bind_port":   s.port,
+		"public_port": s.publicPort,
+		"service":     s.serviceName,
 	})
 
 	s.wg.Add(1)
@@ -129,7 +117,7 @@ func (s *Server) Start() error {
 	return nil
 }
 
-// Port returns the listening port.
+// Port returns the bound listening port.
 func (s *Server) Port() int {
 	return s.port
 }
@@ -151,37 +139,124 @@ func (s *Server) serve() {
 			}
 		}
 
+		select {
+		case s.connSemaphore <- struct{}{}:
+		default:
+			// Max connections exceeded
+			_ = conn.Close()
+			continue
+		}
+
+		s.trackConn(conn, true)
 		s.wg.Add(1)
 		go func(c net.Conn) {
-			defer s.wg.Done()
+			defer func() {
+				<-s.connSemaphore
+				s.trackConn(c, false)
+				s.wg.Done()
+			}()
 			s.handleConn(c)
 		}(conn)
+	}
+}
+
+func (s *Server) trackConn(c net.Conn, add bool) {
+	s.activeConnsMu.Lock()
+	defer s.activeConnsMu.Unlock()
+	if add {
+		s.activeConns[c] = struct{}{}
+	} else {
+		delete(s.activeConns, c)
 	}
 }
 
 func (s *Server) handleConn(conn net.Conn) {
 	defer conn.Close()
 
-	// Set timeout for handshake
 	_ = conn.SetDeadline(time.Now().Add(15 * time.Second))
 
-	sConn, _, _, err := gossh.NewServerConn(conn, s.sshConfig)
+	var authAttempted int32 // 0: false, 1: true
+	clientIP := logger.ExtractIP(conn.RemoteAddr().String())
+
+	// Build a per-connection ServerConfig copy so we can track auth attempts
+	cfg := *s.sshConfig
+	cfg.NoClientAuthCallback = func(c gossh.ConnMetadata) (*gossh.Permissions, error) {
+		atomic.StoreInt32(&authAttempted, 1)
+		s.logger.LogAttack("ssh", clientIP, s.publicPort, s.serviceName, map[string]interface{}{
+			"auth_method":    "none",
+			"username":       c.User(),
+			"client_version": string(c.ClientVersion()),
+			"remote_addr":    c.RemoteAddr().String(),
+		})
+		return nil, errors.New("permission denied")
+	}
+
+	cfg.PasswordCallback = func(c gossh.ConnMetadata, password []byte) (*gossh.Permissions, error) {
+		atomic.StoreInt32(&authAttempted, 1)
+		s.logger.LogAttack("ssh", clientIP, s.publicPort, s.serviceName, map[string]interface{}{
+			"auth_method":    "password",
+			"username":       c.User(),
+			"password":       string(password),
+			"client_version": string(c.ClientVersion()),
+			"remote_addr":    c.RemoteAddr().String(),
+		})
+		return nil, errors.New("permission denied")
+	}
+
+	cfg.PublicKeyCallback = func(c gossh.ConnMetadata, key gossh.PublicKey) (*gossh.Permissions, error) {
+		atomic.StoreInt32(&authAttempted, 1)
+		pubKeyStr := strings.TrimSpace(string(gossh.MarshalAuthorizedKey(key)))
+		s.logger.LogAttack("ssh", clientIP, s.publicPort, s.serviceName, map[string]interface{}{
+			"auth_method":    "publickey",
+			"username":       c.User(),
+			"key_type":       key.Type(),
+			"fingerprint":    gossh.FingerprintSHA256(key),
+			"public_key":     pubKeyStr,
+			"client_version": string(c.ClientVersion()),
+			"remote_addr":    c.RemoteAddr().String(),
+		})
+		return nil, errors.New("permission denied")
+	}
+
+	sConn, _, _, err := gossh.NewServerConn(conn, &cfg)
 	if err != nil {
-		// Handshake/auth failed as expected
+		// If the client connected and completed banner exchange but disconnected before attempting auth
+		// (e.g. ssh-keyscan, nmap banner inspection, probe), record the probing attempt.
+		if atomic.LoadInt32(&authAttempted) == 0 {
+			s.logger.LogAttack("ssh", clientIP, s.publicPort, s.serviceName, map[string]interface{}{
+				"stage":       "pre_auth",
+				"remote_addr": conn.RemoteAddr().String(),
+				"error":       err.Error(),
+			})
+		}
 		return
 	}
-	// Defensive: Even if an auth bug occurs, close immediately and never grant a shell
+
+	// Defensive safeguard: never permit an interactive session
 	if sConn != nil {
 		_ = sConn.Close()
 	}
 }
 
-// Stop gracefully shuts down the SSH honeypot.
+// Stop gracefully shuts down the SSH honeypot and terminates active connections.
 func (s *Server) Stop(ctx context.Context) error {
-	close(s.quit)
+	select {
+	case <-s.quit:
+		return nil // already stopped
+	default:
+		close(s.quit)
+	}
+
 	if s.listener != nil {
 		_ = s.listener.Close()
 	}
+
+	// Forcibly close all active connections so graceful shutdown does not block
+	s.activeConnsMu.Lock()
+	for c := range s.activeConns {
+		_ = c.Close()
+	}
+	s.activeConnsMu.Unlock()
 
 	c := make(chan struct{})
 	go func() {
