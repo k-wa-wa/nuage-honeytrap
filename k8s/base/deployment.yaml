@@ -1,0 +1,78 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nuage-honeytrap
+  labels:
+    app.kubernetes.io/name: nuage-honeytrap
+    app: nuage-honeytrap
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nuage-honeytrap
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: nuage-honeytrap
+        app: nuage-honeytrap
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: honeytrap
+          image: ghcr.io/k-wa-wa/nuage-honeytrap:latest
+          imagePullPolicy: Always
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          ports:
+            - name: ssh
+              containerPort: 2222
+              protocol: TCP
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+            - name: postgres
+              containerPort: 5432
+              protocol: TCP
+          env:
+            - name: HONEYTRAP_SSH_PORT
+              value: "2222"
+            - name: HONEYTRAP_HTTP_PORT
+              value: "8080"
+            - name: HONEYTRAP_POSTGRES_PORT
+              value: "5432"
+            - name: HONEYTRAP_SSH_PUBLIC_PORT
+              value: "22"
+            - name: HONEYTRAP_HTTP_PUBLIC_PORT
+              value: "80"
+            - name: HONEYTRAP_POSTGRES_PUBLIC_PORT
+              value: "5432"
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 200m
+              memory: 64Mi

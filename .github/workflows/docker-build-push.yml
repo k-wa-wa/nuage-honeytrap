@@ -1,0 +1,18 @@
+name: Build and Push Docker Image
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+
+permissions:
+  contents: read
+  packages: write
+  pull-requests: write
+
+jobs:
+  docker-build-push:
+    uses: k-wa-wa/nuage-workspace/.github/workflows/docker-build-push.yml@master
+    with:
+      image: ghcr.io/${{ github.repository }}
