@@ -274,21 +274,52 @@ func (s *Server) handleAll(w http.ResponseWriter, r *http.Request) {
 		headers[k] = strings.Join(v, ", ")
 	}
 
-	// Always use real connection IP (r.RemoteAddr). Do NOT trust X-Forwarded-For or X-Real-IP
-	// since there is no reverse proxy in front of this ClusterIP service.
-	clientIP := logger.ExtractIP(r.RemoteAddr)
+	// Determine client source IP:
+	// Prioritize CF-Connecting-IP when present and valid (e.g. via Cloudflare Tunnel).
+	// Validate with net.ParseIP to prevent arbitrary string injection and VictoriaLogs pollution.
+	// Always record real connection IP (r.RemoteAddr) and src_ip_source for auditability and spoofing detection.
+	// Do NOT trust X-Forwarded-For or X-Real-IP as they can be easily spoofed by attackers.
+	realIP := logger.ExtractIP(r.RemoteAddr)
+	clientIP := realIP
+	srcIPSource := "remote_addr"
+	var invalidCFIP string
 
-	s.logger.LogAttack("http", clientIP, s.publicPort, s.serviceName, map[string]interface{}{
-		"method":      r.Method,
-		"path":        rawPath,
-		"request_uri": reqURI,
-		"query":       r.URL.RawQuery,
-		"user_agent":  r.UserAgent(),
-		"headers":     headers,
-		"body":        bodySnippet,
-		"host":        r.Host,
-		"remote_addr": r.RemoteAddr,
-	})
+	if rawCFIP := strings.TrimSpace(r.Header.Get("CF-Connecting-IP")); rawCFIP != "" {
+		extractedCFIP := logger.ExtractIP(rawCFIP)
+		if parsed := net.ParseIP(extractedCFIP); parsed != nil {
+			clientIP = parsed.String()
+			srcIPSource = "cf-connecting-ip"
+		} else {
+			invalidCFIP = rawCFIP
+		}
+	}
+
+	details := map[string]interface{}{
+		"method":        r.Method,
+		"path":          rawPath,
+		"request_uri":   reqURI,
+		"query":         r.URL.RawQuery,
+		"user_agent":    r.UserAgent(),
+		"headers":       headers,
+		"body":          bodySnippet,
+		"host":          r.Host,
+		"remote_addr":   r.RemoteAddr,
+		"remote_ip":     realIP,
+		"src_ip_source": srcIPSource,
+	}
+
+	if invalidCFIP != "" {
+		details["invalid_cf_connecting_ip"] = invalidCFIP
+	}
+
+	if country := strings.TrimSpace(r.Header.Get("CF-IPCountry")); country != "" {
+		details["country"] = country
+	}
+	if rayID := strings.TrimSpace(r.Header.Get("CF-Ray")); rayID != "" {
+		details["ray_id"] = rayID
+	}
+
+	s.logger.LogAttack("http", clientIP, s.publicPort, s.serviceName, details)
 
 	if isHealthz {
 		w.Header().Set("Content-Type", "application/json")

@@ -1,0 +1,12 @@
+keys:
+  - &admin_key     age17e67u5g3j9v6sxxrk448gsgmv9ldc2umqgad579du75fgjkjtcasatrhxr
+  - &master_key    age1vesvx04kyv2nz4s2u3yn3h0msmra44lsn97n263nfr254zcckscq8nzyfq
+  - &argocd_key    age1vqgm0gczrwyluk9lyhpz49uea7m04u53q4c60kwn9s6wuguhju3qjznrut
+
+creation_rules:
+  - path_regex: k8s/overlays/prod/secrets/prod-secrets\.yaml$
+    key_groups:
+      - age:
+          - *admin_key
+          - *master_key
+          - *argocd_key

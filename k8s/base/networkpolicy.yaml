@@ -1,0 +1,92 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: nuage-honeytrap
+  labels:
+    app.kubernetes.io/name: nuage-honeytrap
+    app: nuage-honeytrap
+spec:
+  podSelector:
+    matchLabels:
+      app: nuage-honeytrap
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Allow incoming traffic to honeypot trap ports (SSH, HTTP, PostgreSQL) from any source
+    - ports:
+        - protocol: TCP
+          port: 2222
+        - protocol: TCP
+          port: 8080
+        - protocol: TCP
+          port: 5432
+  egress:
+    # Allow outbound DNS queries to CoreDNS/kube-dns only.
+    # All lateral movement to internal cluster services and internet outbound are strictly blocked.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: cloudflared
+  labels:
+    app.kubernetes.io/name: cloudflared
+    app: cloudflared
+spec:
+  podSelector:
+    matchLabels:
+      app: cloudflared
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress: []
+  egress:
+    # 1. Forward decoy traffic to nuage-honeytrap HTTP port
+    - to:
+        - podSelector:
+            matchLabels:
+              app: nuage-honeytrap
+      ports:
+        - protocol: TCP
+          port: 8080
+    # 2. Query CoreDNS for name resolution
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # 3. Tunnel connection to Cloudflare Edge (UDP 7844 for QUIC, TCP 7844/443 for fallback)
+    # Strictly isolate from internal private networks (10.0.0.0/8, 192.168.0.0/16, 172.16.0.0/12)
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 192.168.0.0/16
+              - 172.16.0.0/12
+      ports:
+        - protocol: UDP
+          port: 7844
+        - protocol: TCP
+          port: 7844
+        - protocol: TCP
+          port: 443

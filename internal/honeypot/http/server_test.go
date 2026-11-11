@@ -260,3 +260,177 @@ func TestHTTPLoginDecoyFailure(t *testing.T) {
 		t.Fatalf("expected password payload in logs, got:\n%s", output)
 	}
 }
+
+func TestHTTPCloudflareHeaders(t *testing.T) {
+	var sbuf safeBuffer
+	l := logger.New(&sbuf)
+
+	srv := NewServer(Config{
+		Port:        0,
+		PublicPort:  80,
+		ServiceName: "portal-test",
+		Logger:      l,
+	})
+	if err := srv.Start(); err != nil {
+		t.Fatalf("failed to start server: %v", err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = srv.Stop(ctx)
+	}()
+
+	client := &http.Client{}
+
+	tests := []struct {
+		name                string
+		headers             map[string]string
+		expectedSrcIP       string
+		expectedSrcIPSource string
+		expectedCountry     string
+		expectedRayID       string
+		expectedInvalidCFIP string
+	}{
+		{
+			name: "All Cloudflare headers present (IPv4)",
+			headers: map[string]string{
+				"CF-Connecting-IP": "198.51.100.42",
+				"CF-IPCountry":     "JP",
+				"CF-Ray":           "8a1b2c3d4e5f6g7h-NRT",
+				"X-Forwarded-For":  "203.0.113.1", // Spoofed XFF should be ignored in favor of CF-Connecting-IP
+			},
+			expectedSrcIP:       "198.51.100.42",
+			expectedSrcIPSource: "cf-connecting-ip",
+			expectedCountry:     "JP",
+			expectedRayID:       "8a1b2c3d4e5f6g7h-NRT",
+		},
+		{
+			name: "CF-Connecting-IP with port",
+			headers: map[string]string{
+				"CF-Connecting-IP": "198.51.100.99:54321",
+				"CF-IPCountry":     "US",
+			},
+			expectedSrcIP:       "198.51.100.99",
+			expectedSrcIPSource: "cf-connecting-ip",
+			expectedCountry:     "US",
+			expectedRayID:       "",
+		},
+		{
+			name: "CF-Connecting-IP with valid IPv6",
+			headers: map[string]string{
+				"CF-Connecting-IP": "2001:db8::1",
+				"CF-IPCountry":     "DE",
+			},
+			expectedSrcIP:       "2001:db8::1",
+			expectedSrcIPSource: "cf-connecting-ip",
+			expectedCountry:     "DE",
+			expectedRayID:       "",
+		},
+		{
+			name: "Invalid CF-Connecting-IP falls back to RemoteAddr and logs invalid_cf_connecting_ip",
+			headers: map[string]string{
+				"CF-Connecting-IP": "invalid-ip-string<script>",
+				"CF-IPCountry":     "SG",
+			},
+			expectedSrcIP:       "127.0.0.1",
+			expectedSrcIPSource: "remote_addr",
+			expectedCountry:     "SG",
+			expectedRayID:       "",
+			expectedInvalidCFIP: "invalid-ip-string<script>",
+		},
+		{
+			name: "No Cloudflare headers (fallback to RemoteAddr)",
+			headers: map[string]string{
+				"User-Agent": "normal-client",
+			},
+			expectedSrcIP:       "127.0.0.1",
+			expectedSrcIPSource: "remote_addr",
+			expectedCountry:     "",
+			expectedRayID:       "",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			sbuf.mu.Lock()
+			sbuf.buf.Reset()
+			sbuf.mu.Unlock()
+
+			req, err := http.NewRequest("GET", fmt.Sprintf("http://127.0.0.1:%d/test-cf", srv.Port()), nil)
+			if err != nil {
+				t.Fatalf("failed to create request: %v", err)
+			}
+			for k, v := range tc.headers {
+				req.Header.Set(k, v)
+			}
+
+			resp, err := client.Do(req)
+			if err != nil {
+				t.Fatalf("request failed: %v", err)
+			}
+			resp.Body.Close()
+
+			output := sbuf.String()
+			var foundEvent *logger.AttackEvent
+			lines := strings.Split(strings.TrimSpace(output), "\n")
+			for _, line := range lines {
+				var ev logger.AttackEvent
+				if err := json.Unmarshal([]byte(line), &ev); err == nil && ev.Event == "honeypot_attack" {
+					foundEvent = &ev
+					break
+				}
+			}
+			if foundEvent == nil {
+				t.Fatalf("expected honeypot_attack event in output:\n%s", output)
+			}
+
+			event := *foundEvent
+			if event.SrcIP != tc.expectedSrcIP {
+				t.Errorf("expected SrcIP %q, got %q", tc.expectedSrcIP, event.SrcIP)
+			}
+
+			srcIPSource, hasSource := event.Details["src_ip_source"].(string)
+			if !hasSource || srcIPSource != tc.expectedSrcIPSource {
+				t.Errorf("expected src_ip_source %q, got %q (present=%v)", tc.expectedSrcIPSource, srcIPSource, hasSource)
+			}
+
+			remoteIP, hasRemoteIP := event.Details["remote_ip"].(string)
+			if !hasRemoteIP || remoteIP != "127.0.0.1" {
+				t.Errorf("expected remote_ip 127.0.0.1, got %q (present=%v)", remoteIP, hasRemoteIP)
+			}
+
+			invalidCF, hasInvalidCF := event.Details["invalid_cf_connecting_ip"].(string)
+			if tc.expectedInvalidCFIP != "" {
+				if !hasInvalidCF || invalidCF != tc.expectedInvalidCFIP {
+					t.Errorf("expected invalid_cf_connecting_ip %q, got %q (present=%v)", tc.expectedInvalidCFIP, invalidCF, hasInvalidCF)
+				}
+			} else {
+				if hasInvalidCF {
+					t.Errorf("expected no invalid_cf_connecting_ip, got %q", invalidCF)
+				}
+			}
+
+			country, hasCountry := event.Details["country"].(string)
+			if tc.expectedCountry != "" {
+				if !hasCountry || country != tc.expectedCountry {
+					t.Errorf("expected country %q, got %q (present=%v)", tc.expectedCountry, country, hasCountry)
+				}
+			} else {
+				if hasCountry {
+					t.Errorf("expected no country in details, got %q", country)
+				}
+			}
+
+			rayID, hasRayID := event.Details["ray_id"].(string)
+			if tc.expectedRayID != "" {
+				if !hasRayID || rayID != tc.expectedRayID {
+					t.Errorf("expected ray_id %q, got %q (present=%v)", tc.expectedRayID, rayID, hasRayID)
+				}
+			} else {
+				if hasRayID {
+					t.Errorf("expected no ray_id in details, got %q", rayID)
+				}
+			}
+		})
+	}
+}
