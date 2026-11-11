@@ -5,6 +5,12 @@ metadata:
   labels:
     app.kubernetes.io/name: nuage-honeytrap
     app: nuage-honeytrap
+  annotations:
+    keel.sh/policy: force
+    keel.sh/trigger: poll
+    keel.sh/pollSchedule: "@every 2m"
+    keel.sh/monitorContainers: "honeytrap"
+    keel.sh/matchTag: "true"
 spec:
   replicas: 1
   selector:
