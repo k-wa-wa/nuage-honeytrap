@@ -257,6 +257,9 @@ func TestSSHImmediateStopWithHangingConn(t *testing.T) {
 	}
 	defer conn.Close()
 
+	// Give the server a few milliseconds to accept and track the connection
+	time.Sleep(50 * time.Millisecond)
+
 	// Stop server: must complete quickly without waiting for the 15s timeout
 	start := time.Now()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)

@@ -63,3 +63,64 @@ func TestExtractIP(t *testing.T) {
 		}
 	}
 }
+
+type mockEnricher struct{}
+
+func (m *mockEnricher) Lookup(ip string) (uint, string) {
+	if ip == "203.0.113.1" {
+		return 15169, "Google LLC"
+	}
+	return 0, ""
+}
+
+func TestLogAttack_WithEnricher(t *testing.T) {
+	var buf bytes.Buffer
+	l := New(&buf)
+	l.SetEnricher(&mockEnricher{})
+
+	l.LogAttack("http", "203.0.113.1", 80, "portal-staging", map[string]interface{}{
+		"path": "/login",
+	})
+
+	output := strings.TrimSpace(buf.String())
+	var event AttackEvent
+	if err := json.Unmarshal([]byte(output), &event); err != nil {
+		t.Fatalf("failed to unmarshal output: %v", err)
+	}
+
+	asnVal, ok := event.Details["asn"].(float64) // json unmarshal numbers to float64
+	if !ok || uint(asnVal) != 15169 {
+		t.Errorf("expected details.asn = 15169, got %v", event.Details["asn"])
+	}
+
+	if event.Details["as_org"] != "Google LLC" {
+		t.Errorf("expected details.as_org = Google LLC, got %v", event.Details["as_org"])
+	}
+}
+
+func TestLogAttack_WithEnricher_DoesNotOverwriteExisting(t *testing.T) {
+	var buf bytes.Buffer
+	l := New(&buf)
+	l.SetEnricher(&mockEnricher{})
+
+	l.LogAttack("http", "203.0.113.1", 80, "portal-staging", map[string]interface{}{
+		"path":   "/login",
+		"asn":    99999,
+		"as_org": "Custom Org",
+	})
+
+	output := strings.TrimSpace(buf.String())
+	var event AttackEvent
+	if err := json.Unmarshal([]byte(output), &event); err != nil {
+		t.Fatalf("failed to unmarshal output: %v", err)
+	}
+
+	asnVal, ok := event.Details["asn"].(float64)
+	if !ok || uint(asnVal) != 99999 {
+		t.Errorf("expected existing asn = 99999 preserved, got %v", event.Details["asn"])
+	}
+
+	if event.Details["as_org"] != "Custom Org" {
+		t.Errorf("expected existing as_org preserved, got %v", event.Details["as_org"])
+	}
+}
