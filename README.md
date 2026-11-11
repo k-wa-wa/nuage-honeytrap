@@ -69,6 +69,33 @@ Nuage Cluster 向けのマルチプロトコル侵入検知ハニーポットで
 }
 ```
 
+HTTP の攻撃ログには、アクセス先のドメインを正規化した値（小文字・ポートと末尾のドットを除去）が一番上の階層の `domain` に入る。ホスト名として不正な値の場合は `domain` を出さず、元の Host ヘッダーは `details.host` に残す。SSH・PostgreSQL のログには `domain` は無い。
+
+## 囮ドメインの登録（registrar）
+
+`nuage-honeytrap-registrar` CronJob が毎日 9:00 (JST) に、囮ドメインを次のサービスへ登録する。公開フィードを巡回するクローラーや攻撃者にドメインを見つけさせ、ハニーポットへ誘引するためである。
+
+| 登録先 | 内容 | 必要なキー |
+| :--- | :--- | :--- |
+| urlscan.io | 公開 (`public`) スキャンを依頼し、検索結果と「最近のスキャン」に載せる | `URLSCAN_API_KEY`（urlscan.io のアカウントで発行） |
+| Wayback Machine | Save Page Now 2 API でスナップショットを保存する。匿名では 401 になる | `WAYBACK_ACCESS_KEY` / `WAYBACK_SECRET_KEY`（https://archive.org/account/s3.php で発行） |
+
+- 結果は 1 行 1 JSON（`message: "registration succeeded"` / `"registration failed"`、`fields.target`・`fields.domain`・`fields.result_url`）で標準出力に出る。
+- 1 件でも登録に失敗すると、Job は終了コード 1 で失敗する。成功済みの登録が重複しないよう、再試行はしない（`backoffLimit: 0`）。
+- VirusTotal は、偽のログイン画面がフィッシングと判定されて親ドメインの評判を落とすおそれがあるため登録しない。
+- キーは SOPS で暗号化した `k8s/overlays/prod/secrets/prod-secrets.yaml` に置き、argocd-vault-plugin で `honeytrap-registrar` Secret に展開する。
+- イメージは `ghcr.io/k-wa-wa/nuage-honeytrap-registrar`（`Dockerfile.registrar`、scratch ベース）である。
+- NetworkPolicy で外向き通信を DNS と 443/TCP（プライベート IP 帯を除く）に限る。
+
+### ドメインを追加するとき
+
+ドメイン一覧は次の 2 か所にあり、両方を揃えて直す。
+
+1. nuage-cluster の `terraform/cloudflare/main.tf`（`honeytrap_hostnames`）: Tunnel の転送ルールと CNAME を作る。`terragrunt apply` で反映する。
+2. このリポジトリの `k8s/base/registrar-cronjob.yaml`（`REGISTRAR_DOMAINS`）: 登録先へ送るドメイン。
+
+名前解決できないドメインは urlscan.io に拒否され Job が失敗するので、1 を先に反映する。
+
 ## アーキテクチャ
 
 ```
@@ -105,6 +132,7 @@ go test -count=1 ./...
 
 # バイナリのビルド
 CGO_ENABLED=0 go build -o bin/honeytrap ./cmd/honeytrap
+CGO_ENABLED=0 go build -o bin/registrar ./cmd/registrar
 
 # ローカルでの起動
 ./bin/honeytrap
@@ -123,6 +151,15 @@ CGO_ENABLED=0 go build -o bin/honeytrap ./cmd/honeytrap
 | `HONEYTRAP_HTTP_SERVICE` | `portal-staging` | HTTP トラップのログ用サービス名 |
 | `HONEYTRAP_POSTGRES_SERVICE` | `postgres-staging` | PostgreSQL トラップのログ用サービス名 |
 | `HONEYTRAP_MAX_CONNECTIONS` | `100` | プロトコルごとの最大同時接続数 |
+
+registrar の環境変数（すべて必須。未設定ならエラーで終了する）:
+
+| 環境変数 | 説明 |
+| :--- | :--- |
+| `REGISTRAR_DOMAINS` | 登録するドメインのカンマ区切り一覧 |
+| `URLSCAN_API_KEY` | urlscan.io の API キー |
+| `WAYBACK_ACCESS_KEY` | archive.org の S3 アクセスキー |
+| `WAYBACK_SECRET_KEY` | archive.org の S3 シークレットキー |
 
 ### Kubernetes マニフェストの検証
 ```bash

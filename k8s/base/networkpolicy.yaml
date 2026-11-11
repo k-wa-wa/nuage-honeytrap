@@ -90,3 +90,45 @@ spec:
           port: 7844
         - protocol: TCP
           port: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: nuage-honeytrap-registrar
+  labels:
+    app.kubernetes.io/name: nuage-honeytrap-registrar
+    app: nuage-honeytrap-registrar
+spec:
+  podSelector:
+    matchLabels:
+      app: nuage-honeytrap-registrar
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress: []
+  egress:
+    # 1. Query CoreDNS for name resolution
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # 2. HTTPS to urlscan.io and web.archive.org only.
+    # Strictly isolate from internal private networks (10.0.0.0/8, 192.168.0.0/16, 172.16.0.0/12)
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 192.168.0.0/16
+              - 172.16.0.0/12
+      ports:
+        - protocol: TCP
+          port: 443

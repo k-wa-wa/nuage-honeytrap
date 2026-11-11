@@ -17,6 +17,7 @@ type AttackEvent struct {
 	SrcIP     string                 `json:"src_ip"`
 	DstPort   int                    `json:"dst_port"`
 	Service   string                 `json:"service"`
+	Domain    string                 `json:"domain,omitempty"`
 	Details   map[string]interface{} `json:"details"`
 }
 
@@ -61,6 +62,12 @@ func (l *Logger) SetEnricher(enricher IPEnricher) {
 
 // LogAttack writes an AttackEvent as a single JSON line.
 func (l *Logger) LogAttack(protocol string, srcIP string, dstPort int, service string, details map[string]interface{}) {
+	l.LogAttackWithDomain(protocol, srcIP, dstPort, service, "", details)
+}
+
+// LogAttackWithDomain writes an AttackEvent with the targeted domain as a single JSON line.
+// An empty domain is omitted from the output.
+func (l *Logger) LogAttackWithDomain(protocol string, srcIP string, dstPort int, service string, domain string, details map[string]interface{}) {
 	if details == nil {
 		details = make(map[string]interface{})
 	}
@@ -87,6 +94,7 @@ func (l *Logger) LogAttack(protocol string, srcIP string, dstPort int, service s
 		SrcIP:     srcIP,
 		DstPort:   dstPort,
 		Service:   service,
+		Domain:    domain,
 		Details:   details,
 	}
 

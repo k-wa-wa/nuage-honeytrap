@@ -319,7 +319,7 @@ func (s *Server) handleAll(w http.ResponseWriter, r *http.Request) {
 		details["ray_id"] = rayID
 	}
 
-	s.logger.LogAttack("http", clientIP, s.publicPort, s.serviceName, details)
+	s.logger.LogAttackWithDomain("http", clientIP, s.publicPort, s.serviceName, normalizeDomain(r.Host), details)
 
 	if isHealthz {
 		w.Header().Set("Content-Type", "application/json")
@@ -347,6 +347,34 @@ func (s *Server) handleAll(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 		_, _ = w.Write([]byte(apache404HTML))
 	}
+}
+
+// maxDomainLength is the maximum length of a DNS name (RFC 1035).
+const maxDomainLength = 253
+
+// normalizeDomain turns an attacker-controlled Host header into a lowercase domain without port
+// or trailing dot. It returns "" when the value is not a plausible hostname, so that arbitrary
+// strings do not pollute the domain field in VictoriaLogs. The raw value stays in details.host.
+func normalizeDomain(host string) string {
+	h := strings.TrimSpace(host)
+	if splitHost, _, err := net.SplitHostPort(h); err == nil {
+		h = splitHost
+	}
+	h = strings.TrimSuffix(strings.ToLower(h), ".")
+
+	if h == "" || len(h) > maxDomainLength {
+		return ""
+	}
+	if ip := net.ParseIP(strings.Trim(h, "[]")); ip != nil {
+		return ip.String()
+	}
+	for _, c := range h {
+		isAlnum := (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')
+		if !isAlnum && c != '-' && c != '.' && c != '_' {
+			return ""
+		}
+	}
+	return h
 }
 
 // Stop gracefully stops the HTTP server and forcibly closes any remaining open connections.

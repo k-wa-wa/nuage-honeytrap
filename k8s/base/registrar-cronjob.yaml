@@ -1,0 +1,58 @@
+# 囮ドメインを urlscan.io（公開スキャン）と Wayback Machine に毎日登録する CronJob。
+# 公開フィードを巡回するクローラーや攻撃者にドメインを見つけさせ、ハニーポットへ誘引する。
+# REGISTRAR_DOMAINS は nuage-cluster の terraform/cloudflare/main.tf (honeytrap_hostnames) と揃える。
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: nuage-honeytrap-registrar
+  labels:
+    app.kubernetes.io/name: nuage-honeytrap-registrar
+    app: nuage-honeytrap-registrar
+spec:
+  schedule: "0 9 * * *"
+  timeZone: Asia/Tokyo
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      # 再試行すると成功済みの登録も重複するため、失敗はそのまま見せて翌日の実行に任せる。
+      backoffLimit: 0
+      activeDeadlineSeconds: 1800
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: nuage-honeytrap-registrar
+            app: nuage-honeytrap-registrar
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: registrar
+              image: ghcr.io/k-wa-wa/nuage-honeytrap-registrar:latest
+              imagePullPolicy: Always
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop:
+                    - ALL
+              env:
+                - name: REGISTRAR_DOMAINS
+                  value: "staging-ext.wpcapp.net,dev-portal.wpcapp.net,admin-stg.wpcapp.net,jenkins-dev.wpcapp.net,vpn-staging.wpcapp.net"
+              envFrom:
+                - secretRef:
+                    name: honeytrap-registrar
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 16Mi
+                limits:
+                  cpu: 100m
+                  memory: 64Mi

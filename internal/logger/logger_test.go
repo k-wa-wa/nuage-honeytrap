@@ -124,3 +124,34 @@ func TestLogAttack_WithEnricher_DoesNotOverwriteExisting(t *testing.T) {
 		t.Errorf("expected existing as_org preserved, got %v", event.Details["as_org"])
 	}
 }
+
+func TestLogAttackWithDomain(t *testing.T) {
+	var buf bytes.Buffer
+	l := New(&buf)
+
+	l.LogAttackWithDomain("http", "203.0.113.1", 80, "portal-staging", "dev-portal.example.com", nil)
+
+	output := strings.TrimSpace(buf.String())
+	var raw map[string]interface{}
+	if err := json.Unmarshal([]byte(output), &raw); err != nil {
+		t.Fatalf("failed to unmarshal output: %v", err)
+	}
+	if raw["domain"] != "dev-portal.example.com" {
+		t.Errorf("expected top-level domain dev-portal.example.com, got %v", raw["domain"])
+	}
+}
+
+func TestLogAttack_OmitsEmptyDomain(t *testing.T) {
+	var buf bytes.Buffer
+	l := New(&buf)
+
+	l.LogAttack("ssh", "10.244.0.123", 22, "bastion-dev", nil)
+
+	var raw map[string]interface{}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(buf.String())), &raw); err != nil {
+		t.Fatalf("failed to unmarshal output: %v", err)
+	}
+	if _, exists := raw["domain"]; exists {
+		t.Errorf("expected domain to be omitted for non-HTTP events, got %v", raw["domain"])
+	}
+}
