@@ -1,0 +1,22 @@
+# 囮ドメインを証明書の透明性ログ (Certificate Transparency) に公開するための証明書。
+# CT ログを監視するスキャナーに囮ドメインを見つけさせ、ハニーポットへ誘引する。
+# 発行した証明書はどこにも配信しない（エッジの TLS は Cloudflare が終端する）。
+# 一度 CT ログに載った名前は取り消せない。社内向けの名前を dnsNames に入れてはならない。
+# dnsNames は nuage-cluster の terraform/cloudflare/main.tf (honeytrap_hostnames) と揃える。
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: decoy-ct-publish
+  labels:
+    app.kubernetes.io/name: nuage-honeytrap
+spec:
+  secretName: decoy-ct-publish-tls
+  issuerRef:
+    name: letsencrypt-cloudflare-prod
+    kind: ClusterIssuer
+  dnsNames:
+    - staging-ext.wpcapp.net
+    - dev-portal.wpcapp.net
+    - admin-stg.wpcapp.net
+    - jenkins-dev.wpcapp.net
+    - vpn-staging.wpcapp.net

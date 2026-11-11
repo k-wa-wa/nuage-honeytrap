@@ -7,3 +7,4 @@ resources:
   - service.yaml
   - cloudflared.yaml
   - networkpolicy.yaml
+  - decoy-certificate.yaml

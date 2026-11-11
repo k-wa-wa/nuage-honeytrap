@@ -461,3 +461,70 @@ func TestHTTPCloudflareHeaders(t *testing.T) {
 		})
 	}
 }
+
+func TestNormalizeDomain(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"dev-portal.example.com", "dev-portal.example.com"},
+		{"Dev-Portal.Example.COM", "dev-portal.example.com"},
+		{"staging-ext.example.com:443", "staging-ext.example.com"},
+		{"staging-ext.example.com.", "staging-ext.example.com"},
+		{"127.0.0.1:8080", "127.0.0.1"},
+		{"[2001:db8::1]:80", "2001:db8::1"},
+		{"[2001:db8::1]", "2001:db8::1"},
+		{"", ""},
+		{"evil<script>.example.com", ""},
+		{"a b.example.com", ""},
+		{strings.Repeat("a", 254), ""},
+	}
+
+	for _, tc := range tests {
+		if got := normalizeDomain(tc.input); got != tc.expected {
+			t.Errorf("normalizeDomain(%q) = %q, want %q", tc.input, got, tc.expected)
+		}
+	}
+}
+
+func TestHTTPDomainLogged(t *testing.T) {
+	var sbuf safeBuffer
+	l := logger.New(&sbuf)
+
+	srv := NewServer(Config{Port: 0, Logger: l})
+	if err := srv.Start(); err != nil {
+		t.Fatalf("failed to start server: %v", err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = srv.Stop(ctx)
+	}()
+
+	req, err := http.NewRequest("GET", fmt.Sprintf("http://127.0.0.1:%d/", srv.Port()), nil)
+	if err != nil {
+		t.Fatalf("failed to create request: %v", err)
+	}
+	req.Host = "Dev-Portal.Example.com"
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	resp.Body.Close()
+
+	for _, line := range strings.Split(strings.TrimSpace(sbuf.String()), "\n") {
+		var ev logger.AttackEvent
+		if err := json.Unmarshal([]byte(line), &ev); err != nil || ev.Event != "honeypot_attack" {
+			continue
+		}
+		if ev.Domain != "dev-portal.example.com" {
+			t.Errorf("expected domain dev-portal.example.com, got %q", ev.Domain)
+		}
+		if ev.Details["host"] != "Dev-Portal.Example.com" {
+			t.Errorf("expected raw host preserved in details.host, got %v", ev.Details["host"])
+		}
+		return
+	}
+	t.Fatalf("expected honeypot_attack event in output:\n%s", sbuf.String())
+}

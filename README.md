@@ -70,6 +70,26 @@ Nuage Cluster 向けのマルチプロトコル侵入検知ハニーポットで
 }
 ```
 
+HTTP の攻撃ログには、アクセス先のドメインを正規化した値（小文字・ポートと末尾のドットを除去）が一番上の階層の `domain` に入る。ホスト名として不正な値の場合は `domain` を出さず、元の Host ヘッダーは `details.host` に残す。SSH・PostgreSQL のログには `domain` は無い。
+
+## 囮ドメインの公開（CT ログ）
+
+囮ドメインを、証明書の透明性ログ (Certificate Transparency) に公開する。CT ログを監視するスキャナーは新しく載ったホスト名に短時間でアクセスしてくるので、それを利用してハニーポットへ誘引する。
+
+- `k8s/base/decoy-certificate.yaml` の Certificate を、既存の ClusterIssuer `letsencrypt-cloudflare-prod`（Let's Encrypt、Cloudflare の DNS-01 で検証）で発行する。発行時と、cert-manager による約 2 か月ごとの更新時に CT ログに載る。
+- 発行した証明書（Secret `decoy-ct-publish-tls`）はどこにも配信しない。エッジの TLS は Cloudflare が終端する。
+- 一度 CT ログに載った名前は取り消せない。社内向けの名前を入れてはならない。
+- urlscan.io・Wayback Machine は API キー（アカウント）が要り、Web 画面の自動操作は urlscan.io の規約で禁じられているため使わない。VirusTotal は、偽のログイン画面がフィッシングと判定され、親ドメインの評判を落とすおそれがあるため使わない。
+
+### ドメインを追加するとき
+
+ドメイン一覧は次の 2 か所にあり、両方を揃えて直す。
+
+1. nuage-cluster の `terraform/cloudflare/main.tf`（`honeytrap_hostnames`）: Tunnel の転送ルール・CNAME・エッジ素通しのルールを作る。`terragrunt apply` で反映する。
+2. このリポジトリの `k8s/base/decoy-certificate.yaml`（`dnsNames`）: CT ログに載せる名前。
+
+CT ログに載るとすぐにスキャナーが来るので、1 を先に反映する。
+
 ## アーキテクチャ
 
 ```
