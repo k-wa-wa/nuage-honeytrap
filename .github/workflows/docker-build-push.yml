@@ -16,10 +16,3 @@ jobs:
     uses: k-wa-wa/nuage-workspace/.github/workflows/docker-build-push.yml@master
     with:
       image: ghcr.io/${{ github.repository }}
-
-  registrar:
-    name: Registrar
-    uses: k-wa-wa/nuage-workspace/.github/workflows/docker-build-push.yml@master
-    with:
-      file: ./Dockerfile.registrar
-      image: ghcr.io/${{ github.repository }}-registrar

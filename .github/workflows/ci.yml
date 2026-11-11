@@ -35,4 +35,4 @@ jobs:
         run: go test -v -race ./...
 
       - name: Build binary
-        run: CGO_ENABLED=0 go build -v ./cmd/honeytrap ./cmd/registrar
+        run: CGO_ENABLED=0 go build -v ./cmd/honeytrap

@@ -41,10 +41,8 @@ kubectl kustomize k8s/overlays/prod
 ## 3. ディレクトリ構成
 
 - `cmd/honeytrap`: エントリポイント（シグナルハンドリング・Graceful Shutdown）
-- `cmd/registrar`: 囮ドメインを urlscan.io に登録する CronJob のエントリポイント（`Dockerfile.registrar` で別イメージ）
 - `internal/config`: 環境変数読み込みと設定管理
 - `internal/logger`: 1行1JSON形式の構造化ログ出力（VictoriaLogs 互換）
-- `internal/registrar`: 登録先ごとの Submitter（urlscan.io）と実行ループ
 - `internal/honeypot`: プロトコル統合マネージャー
   - `ssh/`: SSH トラップサーバー（OpenSSH バナー偽装、クレデンシャル収集、常時拒否）
   - `http/`: HTTP トラップサーバー（Apache/PHP 偽装、ステージングポータル HTML、robots.txt）

@@ -71,26 +71,23 @@ Nuage Cluster 向けのマルチプロトコル侵入検知ハニーポットで
 
 HTTP の攻撃ログには、アクセス先のドメインを正規化した値（小文字・ポートと末尾のドットを除去）が一番上の階層の `domain` に入る。ホスト名として不正な値の場合は `domain` を出さず、元の Host ヘッダーは `details.host` に残す。SSH・PostgreSQL のログには `domain` は無い。
 
-## 囮ドメインの登録（registrar）
+## 囮ドメインの公開（CT ログ）
 
-`nuage-honeytrap-registrar` CronJob が毎日 9:00 (JST) に、囮ドメインを urlscan.io へ公開 (`public`) スキャンとして登録し、検索結果と「最近のスキャン」に載せる。公開フィードを巡回するクローラーや攻撃者にドメインを見つけさせ、ハニーポットへ誘引するためである。API キー `URLSCAN_API_KEY` は urlscan.io のアカウントで発行する。
+囮ドメインを、証明書の透明性ログ (Certificate Transparency) に公開する。CT ログを監視するスキャナーは新しく載ったホスト名に短時間でアクセスしてくるので、それを利用してハニーポットへ誘引する。
 
-- 結果は 1 行 1 JSON（`message: "registration succeeded"` / `"registration failed"`、`fields.target`・`fields.domain`・`fields.result_url`）で標準出力に出る。
-- 1 件でも登録に失敗すると、Job は終了コード 1 で失敗する。成功済みの登録が重複しないよう、再試行はしない（`backoffLimit: 0`）。
-- VirusTotal は、偽のログイン画面がフィッシングと判定されて親ドメインの評判を落とすおそれがあるため登録しない。
-- Wayback Machine は、Save Page Now が匿名では 401 を返し archive.org のキーが要るため、登録しない。
-- キーは SOPS で暗号化した `k8s/overlays/prod/secrets/prod-secrets.yaml` に置き、argocd-vault-plugin で `honeytrap-registrar` Secret に展開する。
-- イメージは `ghcr.io/k-wa-wa/nuage-honeytrap-registrar`（`Dockerfile.registrar`、scratch ベース）である。
-- NetworkPolicy で外向き通信を DNS と 443/TCP（プライベート IP 帯を除く）に限る。
+- `k8s/base/decoy-certificate.yaml` の Certificate を、既存の ClusterIssuer `letsencrypt-cloudflare-prod`（Let's Encrypt、Cloudflare の DNS-01 で検証）で発行する。発行時と、cert-manager による約 2 か月ごとの更新時に CT ログに載る。
+- 発行した証明書（Secret `decoy-ct-publish-tls`）はどこにも配信しない。エッジの TLS は Cloudflare が終端する。
+- 一度 CT ログに載った名前は取り消せない。社内向けの名前を入れてはならない。
+- urlscan.io・Wayback Machine は API キー（アカウント）が要り、Web 画面の自動操作は urlscan.io の規約で禁じられているため使わない。VirusTotal は、偽のログイン画面がフィッシングと判定され、親ドメインの評判を落とすおそれがあるため使わない。
 
 ### ドメインを追加するとき
 
 ドメイン一覧は次の 2 か所にあり、両方を揃えて直す。
 
-1. nuage-cluster の `terraform/cloudflare/main.tf`（`honeytrap_hostnames`）: Tunnel の転送ルールと CNAME を作る。`terragrunt apply` で反映する。
-2. このリポジトリの `k8s/base/registrar-cronjob.yaml`（`REGISTRAR_DOMAINS`）: 登録先へ送るドメイン。
+1. nuage-cluster の `terraform/cloudflare/main.tf`（`honeytrap_hostnames`）: Tunnel の転送ルール・CNAME・エッジ素通しのルールを作る。`terragrunt apply` で反映する。
+2. このリポジトリの `k8s/base/decoy-certificate.yaml`（`dnsNames`）: CT ログに載せる名前。
 
-名前解決できないドメインは urlscan.io に拒否され Job が失敗するので、1 を先に反映する。
+CT ログに載るとすぐにスキャナーが来るので、1 を先に反映する。
 
 ## アーキテクチャ
 
@@ -128,7 +125,6 @@ go test -count=1 ./...
 
 # バイナリのビルド
 CGO_ENABLED=0 go build -o bin/honeytrap ./cmd/honeytrap
-CGO_ENABLED=0 go build -o bin/registrar ./cmd/registrar
 
 # ローカルでの起動
 ./bin/honeytrap
@@ -147,13 +143,6 @@ CGO_ENABLED=0 go build -o bin/registrar ./cmd/registrar
 | `HONEYTRAP_HTTP_SERVICE` | `portal-staging` | HTTP トラップのログ用サービス名 |
 | `HONEYTRAP_POSTGRES_SERVICE` | `postgres-staging` | PostgreSQL トラップのログ用サービス名 |
 | `HONEYTRAP_MAX_CONNECTIONS` | `100` | プロトコルごとの最大同時接続数 |
-
-registrar の環境変数（すべて必須。未設定ならエラーで終了する）:
-
-| 環境変数 | 説明 |
-| :--- | :--- |
-| `REGISTRAR_DOMAINS` | 登録するドメインのカンマ区切り一覧 |
-| `URLSCAN_API_KEY` | urlscan.io の API キー |
 
 ### Kubernetes マニフェストの検証
 ```bash
