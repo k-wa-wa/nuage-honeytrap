@@ -7,6 +7,16 @@ metadata:
     app: nuage-honeytrap
 spec:
   type: ClusterIP
+  # SSH のホスト鍵は Pod ごとに起動時に生成する。接続ごとに別の Pod へ振られると
+  # 同じ攻撃元からホスト鍵が変わって見え、ハニーポットだと見抜かれる手がかりになるため、
+  # 同じ攻撃元はいつも同じ Pod につなぐ。
+  # Cloudflare 経由の HTTP は送信元がすべて cloudflared の Pod になるので 1 つの Pod に寄るが、
+  # その Pod が落ちれば Endpoint から外れて別の Pod に切り替わる
+  sessionAffinity: ClientIP
+  # API サーバーの既定値 (3 時間) を明示し、Argo CD の差分に出ないようにする
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: 10800
   selector:
     app: nuage-honeytrap
   ports:

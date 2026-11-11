@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/k-wa-wa/nuage-honeytrap/internal/countryname"
 	"github.com/k-wa-wa/nuage-honeytrap/internal/logger"
 )
 
@@ -314,6 +315,9 @@ func (s *Server) handleAll(w http.ResponseWriter, r *http.Request) {
 
 	if country := strings.TrimSpace(r.Header.Get("CF-IPCountry")); country != "" {
 		details["country"] = country
+		if ja, ok := countryname.Japanese(country); ok {
+			details["country_ja"] = ja
+		}
 	}
 	if rayID := strings.TrimSpace(r.Header.Get("CF-Ray")); rayID != "" {
 		details["ray_id"] = rayID

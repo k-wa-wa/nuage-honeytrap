@@ -38,6 +38,7 @@ Nuage Cluster 向けのマルチプロトコル侵入検知ハニーポットで
   - `/healthz`: Kubernetes ヘルスチェック用エンドポイント（kubelet からの probe は攻撃ログ非出力。外部スキャン時は攻撃ログを記録）。
   - その他（`/.env`, `/admin/...` 等）: パストラバーサルや多重スラッシュを含め、リダイレクトすることなく直接 Apache 風 404 Not Found を返却。
 - **検知情報**: メソッド、URL パス、Query パラメータ、User-Agent、リクエストヘッダー、POST 本文（最大 4KB）。
+- **Cloudflare 経由の付加情報**: `CF-IPCountry` の国コードを `details.country`、その日本語名を `details.country_ja` に記録する（例: `JP` / `日本`）。日本語名はコードに埋め込んだ対応表から引き、外部の DB は使わない。
 
 ### 3. PostgreSQL トラップ (標準 Port 5432 / コンテナ Port 5432)
 - **擬態対象**: 社内ステージングデータベース
@@ -75,13 +76,14 @@ Nuage Cluster 向けのマルチプロトコル侵入検知ハニーポットで
 [攻撃者 / スキャナ]
        │
        ▼
-[Kubernetes Service: nuage-honeytrap]
+[Kubernetes Service: nuage-honeytrap]  (sessionAffinity: ClientIP)
   ├─ 22:TCP   ──────────►  2222:TCP (SSH Trap)
   ├─ 80:TCP   ──────────►  8080:TCP (HTTP Trap)
   └─ 5432:TCP ──────────►  5432:TCP (PostgreSQL Trap)
                                 │
                                 ▼
-                   [Pod: nuage-honeytrap]
+                   [Pod: nuage-honeytrap] × 3
+                   (ワーカーノードに 1 つずつ分散)
                    (Scratch, Non-Root UID:10001)
                                 │
                                 ▼ stdout (JSON)

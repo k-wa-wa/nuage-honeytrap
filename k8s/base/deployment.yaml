@@ -12,7 +12,8 @@ metadata:
     keel.sh/monitorContainers: "honeytrap"
     keel.sh/matchTag: "true"
 spec:
-  replicas: 1
+  # ワーカーノード 1 台につき 1 つずつ置き、ノード障害でもトラップが途切れないようにする
+  replicas: 3
   selector:
     matchLabels:
       app: nuage-honeytrap
@@ -23,6 +24,19 @@ spec:
         app: nuage-honeytrap
     spec:
       automountServiceAccountToken: false
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app: nuage-honeytrap
+          # ローリング更新中に新旧の Pod を合算して偏りを数えないよう、同じリビジョンの Pod だけで数える
+          matchLabelKeys:
+            - pod-template-hash
+          # 既定 (Ignore) では taint のあるコントロールプレーンも数に入り、Pod 0 個の domain があるとみなされて
+          # 2 個目以降が置けず Pending になる。置けないノードは数えない
+          nodeTaintsPolicy: Honor
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001
