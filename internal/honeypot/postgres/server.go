@@ -30,6 +30,7 @@ type Server struct {
 	quit          chan struct{}
 	activeConnsMu sync.Mutex
 	activeConns   map[net.Conn]struct{}
+	stopped       bool
 	connSemaphore chan struct{}
 }
 
@@ -122,7 +123,9 @@ func (s *Server) serve() {
 			continue
 		}
 
-		s.trackConn(conn, true)
+		if !s.trackConn(conn, true) {
+			continue
+		}
 		s.wg.Add(1)
 		go func(c net.Conn) {
 			defer func() {
@@ -135,14 +138,19 @@ func (s *Server) serve() {
 	}
 }
 
-func (s *Server) trackConn(c net.Conn, add bool) {
+func (s *Server) trackConn(c net.Conn, add bool) bool {
 	s.activeConnsMu.Lock()
 	defer s.activeConnsMu.Unlock()
+	if s.stopped && add {
+		_ = c.Close()
+		return false
+	}
 	if add {
 		s.activeConns[c] = struct{}{}
 	} else {
 		delete(s.activeConns, c)
 	}
+	return true
 }
 
 func (s *Server) handleConn(conn net.Conn) {
@@ -319,6 +327,7 @@ func (s *Server) Stop(ctx context.Context) error {
 	}
 
 	s.activeConnsMu.Lock()
+	s.stopped = true
 	for c := range s.activeConns {
 		_ = c.Close()
 	}
