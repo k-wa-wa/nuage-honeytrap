@@ -18,6 +18,7 @@ type Config struct {
 	HTTPServiceName     string
 	PostgresServiceName string
 	MaxConnections      int
+	ASNMMDBPath         string
 }
 
 // Load loads and validates configuration from environment variables.
@@ -64,6 +65,7 @@ func Load() (*Config, error) {
 		HTTPServiceName:     getEnvString("HONEYTRAP_HTTP_SERVICE", "portal-staging"),
 		PostgresServiceName: getEnvString("HONEYTRAP_POSTGRES_SERVICE", "postgres-staging"),
 		MaxConnections:      maxConns,
+		ASNMMDBPath:         getEnvString("HONEYTRAP_ASN_MMDB_PATH", "/etc/GeoLite2-ASN.mmdb"),
 	}, nil
 }
 

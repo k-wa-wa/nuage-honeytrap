@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/k-wa-wa/nuage-honeytrap/internal/config"
+	"github.com/k-wa-wa/nuage-honeytrap/internal/enricher"
 	"github.com/k-wa-wa/nuage-honeytrap/internal/honeypot"
 	"github.com/k-wa-wa/nuage-honeytrap/internal/logger"
 )
@@ -21,6 +22,23 @@ func main() {
 			"error": err.Error(),
 		})
 		os.Exit(1)
+	}
+
+	// Initialize ASN Enricher if MMDB path is provided
+	if cfg.ASNMMDBPath != "" {
+		asnEnricher, err := enricher.New(cfg.ASNMMDBPath)
+		if err != nil {
+			log.Info("ASN enrichment disabled", map[string]interface{}{
+				"reason": err.Error(),
+				"path":   cfg.ASNMMDBPath,
+			})
+		} else if asnEnricher != nil {
+			log.SetEnricher(asnEnricher)
+			defer asnEnricher.Close()
+			log.Info("ASN enrichment enabled", map[string]interface{}{
+				"path": cfg.ASNMMDBPath,
+			})
+		}
 	}
 
 	log.Info("starting nuage-honeytrap", map[string]interface{}{
