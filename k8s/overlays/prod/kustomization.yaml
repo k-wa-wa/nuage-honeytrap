@@ -5,3 +5,4 @@ namespace: nuage-honeytrap
 
 resources:
   - ../../base
+  - secrets/secrets.yaml
