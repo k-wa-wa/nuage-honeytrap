@@ -288,6 +288,7 @@ func TestHTTPCloudflareHeaders(t *testing.T) {
 		expectedSrcIP       string
 		expectedSrcIPSource string
 		expectedCountry     string
+		expectedCountryJa   string
 		expectedRayID       string
 		expectedInvalidCFIP string
 	}{
@@ -302,6 +303,7 @@ func TestHTTPCloudflareHeaders(t *testing.T) {
 			expectedSrcIP:       "198.51.100.42",
 			expectedSrcIPSource: "cf-connecting-ip",
 			expectedCountry:     "JP",
+			expectedCountryJa:   "日本",
 			expectedRayID:       "8a1b2c3d4e5f6g7h-NRT",
 		},
 		{
@@ -313,6 +315,7 @@ func TestHTTPCloudflareHeaders(t *testing.T) {
 			expectedSrcIP:       "198.51.100.99",
 			expectedSrcIPSource: "cf-connecting-ip",
 			expectedCountry:     "US",
+			expectedCountryJa:   "アメリカ合衆国",
 			expectedRayID:       "",
 		},
 		{
@@ -324,6 +327,7 @@ func TestHTTPCloudflareHeaders(t *testing.T) {
 			expectedSrcIP:       "2001:db8::1",
 			expectedSrcIPSource: "cf-connecting-ip",
 			expectedCountry:     "DE",
+			expectedCountryJa:   "ドイツ",
 			expectedRayID:       "",
 		},
 		{
@@ -335,8 +339,20 @@ func TestHTTPCloudflareHeaders(t *testing.T) {
 			expectedSrcIP:       "127.0.0.1",
 			expectedSrcIPSource: "remote_addr",
 			expectedCountry:     "SG",
+			expectedCountryJa:   "シンガポール",
 			expectedRayID:       "",
 			expectedInvalidCFIP: "invalid-ip-string<script>",
+		},
+		{
+			name: "Unknown CF-IPCountry code keeps country but omits country_ja",
+			headers: map[string]string{
+				"CF-IPCountry": "ZZ",
+			},
+			expectedSrcIP:       "127.0.0.1",
+			expectedSrcIPSource: "remote_addr",
+			expectedCountry:     "ZZ",
+			expectedCountryJa:   "",
+			expectedRayID:       "",
 		},
 		{
 			name: "No Cloudflare headers (fallback to RemoteAddr)",
@@ -418,6 +434,17 @@ func TestHTTPCloudflareHeaders(t *testing.T) {
 			} else {
 				if hasCountry {
 					t.Errorf("expected no country in details, got %q", country)
+				}
+			}
+
+			countryJa, hasCountryJa := event.Details["country_ja"].(string)
+			if tc.expectedCountryJa != "" {
+				if !hasCountryJa || countryJa != tc.expectedCountryJa {
+					t.Errorf("expected country_ja %q, got %q (present=%v)", tc.expectedCountryJa, countryJa, hasCountryJa)
+				}
+			} else {
+				if hasCountryJa {
+					t.Errorf("expected no country_ja in details, got %q", countryJa)
 				}
 			}
 
