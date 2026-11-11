@@ -1,4 +1,4 @@
-// Command registrar submits the honeypot domains to urlscan.io and the Wayback Machine.
+// Command registrar submits the honeypot domains to urlscan.io as public scans.
 // It runs as a Kubernetes CronJob and exits non-zero when any submission fails.
 package main
 
@@ -33,14 +33,6 @@ func run(log *logger.Logger) error {
 	if err != nil {
 		return err
 	}
-	waybackAccess, err := requireEnv("WAYBACK_ACCESS_KEY")
-	if err != nil {
-		return err
-	}
-	waybackSecret, err := requireEnv("WAYBACK_SECRET_KEY")
-	if err != nil {
-		return err
-	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -49,7 +41,6 @@ func run(log *logger.Logger) error {
 	runner := &registrar.Runner{
 		Submitters: []registrar.Submitter{
 			&registrar.URLScan{APIKey: urlscanKey, HTTPClient: client},
-			&registrar.Wayback{AccessKey: waybackAccess, SecretKey: waybackSecret, HTTPClient: client},
 		},
 		Logger:   log,
 		Interval: 10 * time.Second,

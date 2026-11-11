@@ -1,4 +1,4 @@
-# 囮ドメインを urlscan.io（公開スキャン）と Wayback Machine に毎日登録する CronJob。
+# 囮ドメインを urlscan.io に公開スキャンとして毎日登録する CronJob。
 # 公開フィードを巡回するクローラーや攻撃者にドメインを見つけさせ、ハニーポットへ誘引する。
 # REGISTRAR_DOMAINS は nuage-cluster の terraform/cloudflare/main.tf (honeytrap_hostnames) と揃える。
 apiVersion: batch/v1

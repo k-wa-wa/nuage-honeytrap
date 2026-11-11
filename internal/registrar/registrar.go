@@ -1,5 +1,5 @@
-// Package registrar submits the honeypot domains to public scanning and archiving services
-// (urlscan.io, Wayback Machine) so that crawlers and attackers who mine those feeds find them.
+// Package registrar submits the honeypot domains to public scanning services (urlscan.io)
+// so that crawlers and attackers who mine those feeds find them.
 package registrar
 
 import (
