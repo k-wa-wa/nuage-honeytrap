@@ -1,0 +1,38 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: nuage-honeytrap
+  labels:
+    app.kubernetes.io/name: nuage-honeytrap
+    app: nuage-honeytrap
+spec:
+  podSelector:
+    matchLabels:
+      app: nuage-honeytrap
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Allow incoming traffic to honeypot trap ports (SSH, HTTP, PostgreSQL) from any source
+    - ports:
+        - protocol: TCP
+          port: 2222
+        - protocol: TCP
+          port: 8080
+        - protocol: TCP
+          port: 5432
+  egress:
+    # Allow outbound DNS queries to CoreDNS/kube-dns only.
+    # All lateral movement to internal cluster services and internet outbound are strictly blocked.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53

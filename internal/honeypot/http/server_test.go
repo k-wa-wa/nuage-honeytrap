@@ -260,3 +260,127 @@ func TestHTTPLoginDecoyFailure(t *testing.T) {
 		t.Fatalf("expected password payload in logs, got:\n%s", output)
 	}
 }
+
+func TestHTTPCloudflareHeaders(t *testing.T) {
+	var sbuf safeBuffer
+	l := logger.New(&sbuf)
+
+	srv := NewServer(Config{
+		Port:        0,
+		PublicPort:  80,
+		ServiceName: "portal-test",
+		Logger:      l,
+	})
+	if err := srv.Start(); err != nil {
+		t.Fatalf("failed to start server: %v", err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = srv.Stop(ctx)
+	}()
+
+	client := &http.Client{}
+
+	tests := []struct {
+		name            string
+		headers         map[string]string
+		expectedSrcIP   string
+		expectedCountry string
+		expectedRayID   string
+	}{
+		{
+			name: "All Cloudflare headers present",
+			headers: map[string]string{
+				"CF-Connecting-IP": "198.51.100.42",
+				"CF-IPCountry":     "JP",
+				"CF-Ray":           "8a1b2c3d4e5f6g7h-NRT",
+				"X-Forwarded-For":  "203.0.113.1", // Spoofed XFF should be ignored in favor of CF-Connecting-IP
+			},
+			expectedSrcIP:   "198.51.100.42",
+			expectedCountry: "JP",
+			expectedRayID:   "8a1b2c3d4e5f6g7h-NRT",
+		},
+		{
+			name: "CF-Connecting-IP with port",
+			headers: map[string]string{
+				"CF-Connecting-IP": "198.51.100.99:54321",
+				"CF-IPCountry":     "US",
+			},
+			expectedSrcIP:   "198.51.100.99",
+			expectedCountry: "US",
+			expectedRayID:   "",
+		},
+		{
+			name: "No Cloudflare headers (fallback to RemoteAddr)",
+			headers: map[string]string{
+				"User-Agent": "normal-client",
+			},
+			expectedSrcIP:   "127.0.0.1",
+			expectedCountry: "",
+			expectedRayID:   "",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			sbuf.mu.Lock()
+			sbuf.buf.Reset()
+			sbuf.mu.Unlock()
+
+			req, err := http.NewRequest("GET", fmt.Sprintf("http://127.0.0.1:%d/test-cf", srv.Port()), nil)
+			if err != nil {
+				t.Fatalf("failed to create request: %v", err)
+			}
+			for k, v := range tc.headers {
+				req.Header.Set(k, v)
+			}
+
+			resp, err := client.Do(req)
+			if err != nil {
+				t.Fatalf("request failed: %v", err)
+			}
+			resp.Body.Close()
+
+			output := sbuf.String()
+			var event logger.AttackEvent
+			lines := strings.Split(strings.TrimSpace(output), "\n")
+			found := false
+			for _, line := range lines {
+				if err := json.Unmarshal([]byte(line), &event); err == nil && event.Event == "honeypot_attack" {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Fatalf("expected honeypot_attack event in output:\n%s", output)
+			}
+
+			if event.SrcIP != tc.expectedSrcIP {
+				t.Errorf("expected SrcIP %q, got %q", tc.expectedSrcIP, event.SrcIP)
+			}
+
+			country, hasCountry := event.Details["country"].(string)
+			if tc.expectedCountry != "" {
+				if !hasCountry || country != tc.expectedCountry {
+					t.Errorf("expected country %q, got %q (present=%v)", tc.expectedCountry, country, hasCountry)
+				}
+			} else {
+				if hasCountry {
+					t.Errorf("expected no country in details, got %q", country)
+				}
+			}
+
+			rayID, hasRayID := event.Details["ray_id"].(string)
+			if tc.expectedRayID != "" {
+				if !hasRayID || rayID != tc.expectedRayID {
+					t.Errorf("expected ray_id %q, got %q (present=%v)", tc.expectedRayID, rayID, hasRayID)
+				}
+			} else {
+				if hasRayID {
+					t.Errorf("expected no ray_id in details, got %q", rayID)
+				}
+			}
+		})
+	}
+}

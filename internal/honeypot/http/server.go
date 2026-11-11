@@ -274,11 +274,18 @@ func (s *Server) handleAll(w http.ResponseWriter, r *http.Request) {
 		headers[k] = strings.Join(v, ", ")
 	}
 
-	// Always use real connection IP (r.RemoteAddr). Do NOT trust X-Forwarded-For or X-Real-IP
-	// since there is no reverse proxy in front of this ClusterIP service.
-	clientIP := logger.ExtractIP(r.RemoteAddr)
+	// Determine client source IP:
+	// Prioritize CF-Connecting-IP when present (e.g. via Cloudflare Tunnel).
+	// Otherwise fall back to real connection IP (r.RemoteAddr) for backward compatibility with internal probing.
+	// Do NOT trust X-Forwarded-For or X-Real-IP as they can be easily spoofed by attackers.
+	var clientIP string
+	if cfIP := strings.TrimSpace(r.Header.Get("CF-Connecting-IP")); cfIP != "" {
+		clientIP = logger.ExtractIP(cfIP)
+	} else {
+		clientIP = logger.ExtractIP(r.RemoteAddr)
+	}
 
-	s.logger.LogAttack("http", clientIP, s.publicPort, s.serviceName, map[string]interface{}{
+	details := map[string]interface{}{
 		"method":      r.Method,
 		"path":        rawPath,
 		"request_uri": reqURI,
@@ -288,7 +295,16 @@ func (s *Server) handleAll(w http.ResponseWriter, r *http.Request) {
 		"body":        bodySnippet,
 		"host":        r.Host,
 		"remote_addr": r.RemoteAddr,
-	})
+	}
+
+	if country := strings.TrimSpace(r.Header.Get("CF-IPCountry")); country != "" {
+		details["country"] = country
+	}
+	if rayID := strings.TrimSpace(r.Header.Get("CF-Ray")); rayID != "" {
+		details["ray_id"] = rayID
+	}
+
+	s.logger.LogAttack("http", clientIP, s.publicPort, s.serviceName, details)
 
 	if isHealthz {
 		w.Header().Set("Content-Type", "application/json")
