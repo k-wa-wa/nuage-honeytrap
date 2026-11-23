@@ -1,0 +1,27 @@
+name: K8s Manifest Lint
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - 'k8s/**'
+      - '.yamllint'
+      - '.github/workflows/k8s.yml'
+  pull_request:
+    paths:
+      - 'k8s/**'
+      - '.yamllint'
+      - '.github/workflows/k8s.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  validate-prod:
+    name: Validate K8s Manifests (prod)
+    uses: k-wa-wa/nuage-workspace/.github/workflows/k8s-validate.yml@master
+    with:
+      targets: "k8s/overlays/prod"
+      prod: true
+      yamllint-path: "k8s"
