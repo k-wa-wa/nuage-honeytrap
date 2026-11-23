@@ -6,7 +6,8 @@ metadata:
     app.kubernetes.io/name: cloudflared
     app: cloudflared
 spec:
-  replicas: 1
+  # Cloudflare Edge へ複数 Pod で接続し、ローリング更新やノード障害時もトンネルを維持する
+  replicas: 2
   selector:
     matchLabels:
       app: cloudflared
@@ -17,6 +18,18 @@ spec:
         app: cloudflared
     spec:
       automountServiceAccountToken: false
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app: cloudflared
+          # ローリング更新中に新旧の Pod を合算して偏りを数えないよう、同じリビジョンの Pod だけで数える
+          matchLabelKeys:
+            - pod-template-hash
+          # 既定 (Ignore) では taint のあるコントロールプレーンも数に入り、配置が阻害されるため置けないノードは数えない
+          nodeTaintsPolicy: Honor
       securityContext:
         runAsNonRoot: true
         runAsUser: 65532
@@ -31,7 +44,13 @@ spec:
           args:
             - tunnel
             - --no-autoupdate
+            - --metrics
+            - 0.0.0.0:2000
             - run
+          ports:
+            - name: metrics
+              containerPort: 2000
+              protocol: TCP
           env:
             - name: TUNNEL_TOKEN
               valueFrom:
@@ -44,6 +63,20 @@ spec:
             capabilities:
               drop:
                 - ALL
+          livenessProbe:
+            httpGet:
+              path: /ready
+              port: metrics
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 6
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 3
           resources:
             requests:
               cpu: 10m
@@ -57,3 +90,17 @@ spec:
       volumes:
         - name: tmp
           emptyDir: {}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: cloudflared
+  labels:
+    app.kubernetes.io/name: cloudflared
+    app: cloudflared
+spec:
+  # replicas: 2 に対して最低 1 Pod を維持し、ドレイン時もトンネル接続を止めない
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: cloudflared
